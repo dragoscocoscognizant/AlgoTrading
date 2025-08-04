@@ -1,0 +1,165 @@
+//@version=5
+strategy("(1 with total)Renko RSI EMA Filter", overlay=true)
+
+// Date Range Inputs
+startDate = input.time(timestamp("2025-06-01"), title="Start Date")
+endDate = input.time(timestamp("2025-07-01"), title="End Date")
+
+// Input parameters
+atrLength = input.int(14, title="ATR Length")
+initialCapital = input.float(50000, title="Initial Capital")
+riskPercentage = input.float(0.5, title="Risk Percentage (%)", step=0.1)
+contractValue = input.float(2, title="Contract Value")
+rsiLength = input.int(2, title="RSI Length")
+emaShort = input.int(10, title="EMA Short")
+emaMid = input.int(20, title="EMA Middle")
+emaLong = input.int(30, title="EMA Long")
+
+// Time filter
+inDateRange = time >= startDate and time <= endDate
+
+// Calculate indicators on the Renko chart
+atr = ta.atr(atrLength)
+rsi = ta.rsi(close, rsiLength)
+
+// Calculate EMAs
+ema10 = ta.ema(close, emaShort)
+ema20 = ta.ema(close, emaMid)
+ema30 = ta.ema(close, emaLong)
+
+// EMA Filter for trend direction
+longEmaCondition = ema10 > ema20 and ema20 > ema30
+shortEmaCondition = ema10 < ema20 and ema20 < ema30
+
+// Calculate position size using ATR
+riskAmount = (initialCapital * riskPercentage) / 100
+stopSize = atr
+numContracts = riskAmount / (stopSize * contractValue)
+numContracts := math.round(numContracts)
+
+// Entry conditions with RSI and EMA filters
+long_condition = rsi > 70 and longEmaCondition and inDateRange
+short_condition = rsi < 30 and shortEmaCondition and inDateRange
+
+// Exit conditions for RSI
+exit_long = (rsi < 70) or not inDateRange
+exit_short = (rsi > 30) or not inDateRange
+
+// Execute trades
+if (long_condition and strategy.position_size <= 0)
+    strategy.entry("Long", strategy.long, qty=numContracts)
+
+if (short_condition and strategy.position_size >= 0)
+    strategy.entry("Short", strategy.short, qty=numContracts)
+
+if (exit_long and strategy.position_size > 0)
+    strategy.close("Long")
+
+if (exit_short and strategy.position_size < 0)
+    strategy.close("Short")
+
+// Plot signals and position markers
+plotshape(long_condition, title="Long Entry", location=location.belowbar, color=color.new(color.green, 0), style=shape.triangleup, size=size.small)
+plotshape(short_condition, title="Short Entry", location=location.abovebar, color=color.new(color.red, 0), style=shape.triangledown, size=size.small)
+
+// Color the background based on position
+bgcolor(strategy.position_size > 0 ? color.new(color.green, 90) : strategy.position_size < 0 ? color.new(color.red, 90) : na)
+
+// Variables for trade length tracking
+var int currentTradeLength = 0
+var int totalTrades = 0
+var int[] tradeLengths = array.new_int()
+var int[] tradeStartTimes = array.new_int()
+var float totalBricksMinusTwo = 0.0
+
+// Button to toggle table visibility
+var bool showTable = input.bool(false, title="Show Trade Length Table", inline="Table Toggle")
+var table tradeTable = table.new(position.top_right, columns=6, rows=51, frame_color=color.black, frame_width=1)
+
+// Track trade length in bricks and start times
+if strategy.position_size != 0
+    if currentTradeLength == 0
+        array.push(tradeStartTimes, time)
+    currentTradeLength += 1
+else if currentTradeLength > 0
+    if array.get(tradeStartTimes, array.size(tradeStartTimes) - 1) >= startDate and time <= endDate
+        array.push(tradeLengths, currentTradeLength)
+        totalTrades += 1
+    currentTradeLength := 0
+
+// Create and update the table at the last bar
+if barstate.islast and showTable
+    // Reset total for recalculation
+    totalBricksMinusTwo := 0.0
+    
+    // Create arrays for unique trade lengths and their counts
+    var int[] uniqueLengths = array.new_int()
+    var int[] lengthCounts = array.new_int()
+
+    // Count occurrences of each trade length
+    for i = 0 to array.size(tradeLengths) - 1
+        int length = array.get(tradeLengths, i)
+        int index = array.indexof(uniqueLengths, length)
+        
+        if index == -1
+            array.push(uniqueLengths, length)
+            array.push(lengthCounts, 1)
+        else
+            array.set(lengthCounts, index, array.get(lengthCounts, index) + 1)
+
+    // Sort the lengths
+    var int[] sortedIndices = array.new_int()
+    for i = 0 to array.size(uniqueLengths) - 1
+        array.push(sortedIndices, i)
+    
+    // Bubble sort by length
+    for i = 0 to array.size(sortedIndices) - 2
+        for j = 0 to array.size(sortedIndices) - i - 2
+            int idx1 = array.get(sortedIndices, j)
+            int idx2 = array.get(sortedIndices, j + 1)
+            if array.get(uniqueLengths, idx1) > array.get(uniqueLengths, idx2)
+                int temp = array.get(sortedIndices, j)
+                array.set(sortedIndices, j, array.get(sortedIndices, j + 1))
+                array.set(sortedIndices, j + 1, temp)
+
+    // Clear and create table header
+    table.clear(tradeTable, 0, 0)
+    table.cell(tradeTable, 0, 0, text="Bricks", text_color=color.white, bgcolor=color.blue)
+    table.cell(tradeTable, 1, 0, text="Risk Reward", text_color=color.white, bgcolor=color.blue)
+    table.cell(tradeTable, 2, 0, text="Count", text_color=color.white, bgcolor=color.blue)
+    table.cell(tradeTable, 3, 0, text="% of Total", text_color=color.white, bgcolor=color.blue)
+    table.cell(tradeTable, 4, 0, text="(Bricks-4)*Count", text_color=color.white, bgcolor=color.blue)
+    table.cell(tradeTable, 5, 0, text="Probability", text_color=color.white, bgcolor=color.blue)
+
+    // Fill table with sorted data
+    var float cumulativePercentage = 0.0
+    for i = 0 to math.min(array.size(uniqueLengths) - 1, 49)
+        int sortedIdx = array.get(sortedIndices, i)
+        int length = array.get(uniqueLengths, sortedIdx)
+        int count = array.get(lengthCounts, sortedIdx)
+        float percentage = (count / float(totalTrades)) * 100
+        int bricksMinusTwo = (length - 4) * count
+        
+        // Calculate probability: 100% minus cumulative percentage of shorter trades
+        float probability = 100.0 - cumulativePercentage
+        
+        // Calculate risk reward: starts at -1 and increases by 0.5 for each row
+        float riskReward = -1.0 + (i * 0.5)
+        
+        // Add current percentage to cumulative for next iteration
+        cumulativePercentage := cumulativePercentage + percentage
+        
+        // Add to running total
+        totalBricksMinusTwo := totalBricksMinusTwo + bricksMinusTwo
+        
+        table.cell(tradeTable, 0, i + 1, text=str.tostring(length), text_color=color.white, bgcolor=color.blue)
+        table.cell(tradeTable, 1, i + 1, text=str.tostring(riskReward, "#.#"), text_color=color.white, bgcolor=color.blue)
+        table.cell(tradeTable, 2, i + 1, text=str.tostring(count), text_color=color.white, bgcolor=color.blue)
+        table.cell(tradeTable, 3, i + 1, text=str.tostring(percentage, "#.##") + "%", text_color=color.white, bgcolor=color.blue)
+        table.cell(tradeTable, 4, i + 1, text=str.tostring(bricksMinusTwo), text_color=color.white, bgcolor=color.blue)
+        table.cell(tradeTable, 5, i + 1, text=str.tostring(probability, "#.##") + "%", text_color=color.white, bgcolor=color.blue)
+    
+    // Add total row (using correct row index)
+    int totalRowIndex = math.min(array.size(uniqueLengths), 49) + 1
+    table.cell(tradeTable, 0, totalRowIndex, text="TOTAL", text_color=color.white, bgcolor=color.green)
+    table.cell(tradeTable, 4, totalRowIndex, text=str.tostring(totalBricksMinusTwo), text_color=color.white, bgcolor=color.green)
